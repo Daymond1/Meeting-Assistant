@@ -1,40 +1,65 @@
-from faster_whisper import WhisperModel
 import os
+import sys
+import logging
+from faster_whisper import WhisperModel
 
-def transcribe_audio(audio_path, model_size="small", output_txt="raw_transcript.md"):
+logger = logging.getLogger("MeetingAssistant")
+
+def transcribe_audio(audio_path, model_size="small", language="auto", output_txt="raw_transcript.md", progress_callback=None):
     """
-    Транскрибує аудіофайл за допомогою faster-whisper.
+    Transcribes audio file using faster-whisper.
     """
     if not os.path.exists(audio_path):
-        print(f"Файл {audio_path} не знайдено.")
+        logger.error(f"Audio file not found: {audio_path}")
         return None
 
-    print(f"Завантаження моделі '{model_size}' та початок транскрибації...")
+    logger.info(f"Starting transcription: file={audio_path}, model={model_size}, language={language}")
     
-    # Завантажуємо модель (fp16 для швидкості, якщо підтримується, інакше int8/fp32)
-    # compute_type="int8" є безпечним вибором для процесорів та слабших відеокарт.
-    model = WhisperModel(model_size, device="auto", compute_type="int8")
-    
-    # beam_size=5 є хорошим балансом між швидкістю та якістю
-    segments, info = model.transcribe(audio_path, beam_size=5)
-    
-    print(f"Визначена мова: {info.language} з імовірністю {info.language_probability:.2f}")
-    
-    full_text = []
-    print("Транскрибування:")
-    for segment in segments:
-        print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
-        full_text.append(segment.text)
+    try:
+        logger.info(f"Loading Whisper model '{model_size}' (device: auto, compute_type: int8)...")
+        model = WhisperModel(model_size, device="auto", compute_type="int8")
+        logger.info("Model loaded successfully.")
         
-    final_text = " ".join(full_text)
-    
-    # Зберігаємо сирий транскрипт у вказаний файл
-    with open(output_txt, "w", encoding="utf-8") as f:
-        f.write(final_text)
+        transcribe_args = {"beam_size": 5}
+        if language and language != "auto":
+            transcribe_args["language"] = language
+            
+        logger.info(f"Decoding audio segments with parameters: {transcribe_args}...")
+        segments, info = model.transcribe(audio_path, **transcribe_args)
         
-    print(f"\nТранскрибацію завершено. Текст збережено у {output_txt}")
-    return output_txt
+        logger.info(f"Detected language: {info.language} with probability {info.language_probability:.2f}")
+        
+        total_duration = info.duration
+        full_text = []
+        for segment in segments:
+            seg_text = segment.text.strip()
+            if seg_text:
+                logger.info(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {seg_text}")
+                full_text.append(seg_text)
+            if progress_callback and total_duration > 0:
+                try:
+                    progress_callback(segment.end, total_duration)
+                except Exception:
+                    pass
+                
+        final_text = " ".join(full_text)
+        
+        if not final_text:
+            logger.warning("Warning: transcription is empty. No voice/speech detected.")
+            final_text = "(Silent recording or speech not recognized)"
+        
+        with open(output_txt, "w", encoding="utf-8") as f:
+            f.write(final_text)
+            
+        logger.info(f"Transcription completed successfully. Transcript saved to: {output_txt}")
+        return output_txt
+        
+    except Exception as e:
+        logger.exception(f"Error during audio transcription: {e}")
+        return None
 
 if __name__ == "__main__":
-    # Тестовий запуск
+    # Test run
+    import logging
+    logging.basicConfig(level=logging.INFO)
     transcribe_audio("audio.wav")

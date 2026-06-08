@@ -4,7 +4,10 @@ import pyaudiowpatch as pyaudio
 import soundfile as sf
 import numpy as np
 import wave
+import logging
 from config import load_config
+
+logger = logging.getLogger("MeetingAssistant")
 
 class AudioRecorder:
     def __init__(self):
@@ -27,9 +30,9 @@ class AudioRecorder:
         default_mic = None
         default_spk = None
         
+        # Find default speaker loopback
         try:
             default_spk_info = self.pa.get_default_output_device_info()
-            # PyAudioWPatch often provides a loopback device for the default output
             for i in range(self.pa.get_device_count()):
                 dev = self.pa.get_device_info_by_index(i)
                 if dev["hostApi"] == wasapi_info["index"] and dev.get("isLoopbackDevice"):
@@ -39,12 +42,27 @@ class AudioRecorder:
         except Exception:
             pass
 
+        # Find best default microphone (avoiding Bluetooth AG Audio / Hands-Free)
         try:
+            bluetooth_fallback = None
             for i in range(self.pa.get_device_count()):
                 dev = self.pa.get_device_info_by_index(i)
+                # Ensure it's a WASAPI input device and not loopback
                 if dev["hostApi"] == wasapi_info["index"] and dev.get("maxInputChannels", 0) > 0 and not dev.get("isLoopbackDevice"):
-                    default_mic = i
-                    break
+                    name_lower = dev["name"].lower()
+                    is_bluetooth = any(word in name_lower for word in ["hands-free", "bluetooth", "ag audio", "hfp", "handsfree", "wireless headset"])
+                    
+                    if is_bluetooth:
+                        if bluetooth_fallback is None:
+                            bluetooth_fallback = i
+                    else:
+                        # Non-Bluetooth mic found! We prefer this.
+                        default_mic = i
+                        break
+            
+            # If no non-bluetooth mic was found, use the bluetooth mic as fallback
+            if default_mic is None:
+                default_mic = bluetooth_fallback
         except Exception:
             pass
             
@@ -69,7 +87,7 @@ class AudioRecorder:
         if spk_id is None:
             spk_id = def_spk
 
-        print(f"Starting recording with Mic ID: {mic_id}, Spk ID: {spk_id}")
+        logger.info(f"Starting recording with Mic ID: {mic_id}, Spk ID: {spk_id}")
 
         # We will use device-specific sample rates below
 
@@ -106,11 +124,10 @@ class AudioRecorder:
                     rate=self.mic_sample_rate,
                     input=True,
                     input_device_index=mic_id,
-                    stream_callback=mic_callback,
-                    frames_per_buffer=self.CHUNK
+                    stream_callback=mic_callback
                 )
         except Exception as e:
-            print(f"Failed to open microphone: {e}")
+            logger.error(f"Failed to open microphone: {e}")
 
         try:
             if spk_id is not None:
@@ -127,11 +144,10 @@ class AudioRecorder:
                     rate=rate,
                     input=True,
                     input_device_index=spk_id,
-                    stream_callback=spk_callback,
-                    frames_per_buffer=self.CHUNK
+                    stream_callback=spk_callback
                 )
         except Exception as e:
-            print(f"Failed to open loopback (system audio): {e}")
+            logger.error(f"Failed to open loopback (system audio): {e}")
 
     def stop_recording(self, output_file="meeting_record.wav"):
         self.is_recording = False
@@ -187,17 +203,22 @@ class AudioRecorder:
         mic_resampled = resample_np(mic_audio, mic_rate, target_sr)
         spk_resampled = resample_np(spk_audio, spk_rate, target_sr)
             
-        # Pad to same length
-        max_len = max(len(mic_resampled), len(spk_resampled))
-        mic_padded = np.pad(mic_resampled, (0, max_len - len(mic_resampled)))
-        spk_padded = np.pad(spk_resampled, (0, max_len - len(spk_resampled)))
-        
-        # Mix (average)
-        mixed = (mic_padded + spk_padded) / 2.0
+        # Mix the streams
+        if len(mic_resampled) > 0 and len(spk_resampled) > 0:
+            max_len = max(len(mic_resampled), len(spk_resampled))
+            mic_padded = np.pad(mic_resampled, (0, max_len - len(mic_resampled)))
+            spk_padded = np.pad(spk_resampled, (0, max_len - len(spk_resampled)))
+            mixed = (mic_padded + spk_padded) / 2.0
+        elif len(mic_resampled) > 0:
+            mixed = mic_resampled
+        elif len(spk_resampled) > 0:
+            mixed = spk_resampled
+        else:
+            mixed = np.zeros(0, dtype=np.float32)
         
         if len(mixed) > 0:
             sf.write(output_file, mixed, target_sr)
-            print(f"Saved recording to {output_file}")
+            logger.info(f"Saved recording to {output_file}")
             return output_file
             
         return None
