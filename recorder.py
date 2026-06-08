@@ -12,7 +12,7 @@ logger = logging.getLogger("MeetingAssistant")
 class AudioRecorder:
     def __init__(self):
         self.is_recording = False
-        self.pa = pyaudio.PyAudio()
+        self.pa = None
         self.mic_stream = None
         self.spk_stream = None
         self.frames = []
@@ -72,93 +72,128 @@ class AudioRecorder:
         if self.is_recording:
             return
             
-        self.is_recording = True
-        self.frames = []
-        self.mic_data = np.zeros(0, dtype=np.float32)
-        self.spk_data = np.zeros(0, dtype=np.float32)
-        
-        mic_id = self.mic_idx
-        spk_id = self.spk_idx
-        
-        def_mic, def_spk = self._find_default_devices()
-        
-        if mic_id is None:
-            mic_id = def_mic
-        if spk_id is None:
-            spk_id = def_spk
-
-        logger.info(f"Starting recording with Mic ID: {mic_id}, Spk ID: {spk_id}")
-
-        # We will use device-specific sample rates below
-
-        # Callback for microphone
-        def mic_callback(in_data, frame_count, time_info, status):
-            if self.is_recording:
-                # Convert to numpy array and COPY it, because in_data buffer is reused by PyAudio
-                audio_data = np.frombuffer(in_data, dtype=np.float32).copy()
-                # Store it
-                self.mic_frames.append(audio_data)
-            return (in_data, pyaudio.paContinue)
+        self.pa = pyaudio.PyAudio()
+        try:
+            self.is_recording = True
+            self.frames = []
+            self.mic_data = np.zeros(0, dtype=np.float32)
+            self.spk_data = np.zeros(0, dtype=np.float32)
             
-        # Callback for speaker
-        def spk_callback(in_data, frame_count, time_info, status):
-            if self.is_recording:
-                audio_data = np.frombuffer(in_data, dtype=np.float32).copy()
-                self.spk_frames.append(audio_data)
-            return (in_data, pyaudio.paContinue)
+            mic_id = self.mic_idx
+            spk_id = self.spk_idx
+            
+            def_mic, def_spk = self._find_default_devices()
+            
+            if mic_id is None:
+                mic_id = def_mic
+            if spk_id is None:
+                spk_id = def_spk
 
-        self.mic_frames = []
-        self.spk_frames = []
-        
-        # We need to run these in a blocking way using a loop, or use callbacks.
-        # Callbacks are easier.
-        try:
-            if mic_id is not None:
-                dev_info = self.pa.get_device_info_by_index(mic_id)
-                self.mic_sample_rate = int(dev_info["defaultSampleRate"])
-                self.mic_channels = dev_info.get("maxInputChannels", 1)
-                
-                self.mic_stream = self.pa.open(
-                    format=self.FORMAT,
-                    channels=self.mic_channels,
-                    rate=self.mic_sample_rate,
-                    input=True,
-                    input_device_index=mic_id,
-                    stream_callback=mic_callback
-                )
-        except Exception as e:
-            logger.error(f"Failed to open microphone: {e}")
+            logger.info(f"Starting recording with Mic ID: {mic_id}, Spk ID: {spk_id}")
 
-        try:
-            if spk_id is not None:
-                # WASAPI loopback might require exact channel count/rate of the device
-                dev_info = self.pa.get_device_info_by_index(spk_id)
-                rate = int(dev_info["defaultSampleRate"])
-                channels = dev_info["maxInputChannels"]
-                self.spk_sample_rate = rate
-                self.spk_channels = channels
+            # Callback for microphone
+            def mic_callback(in_data, frame_count, time_info, status):
+                if self.is_recording:
+                    # Convert to numpy array and COPY it, because in_data buffer is reused by PyAudio
+                    audio_data = np.frombuffer(in_data, dtype=np.float32).copy()
+                    # Store it
+                    self.mic_frames.append(audio_data)
+                return (in_data, pyaudio.paContinue)
                 
-                self.spk_stream = self.pa.open(
-                    format=self.FORMAT,
-                    channels=channels,
-                    rate=rate,
-                    input=True,
-                    input_device_index=spk_id,
-                    stream_callback=spk_callback
-                )
+            # Callback for speaker
+            def spk_callback(in_data, frame_count, time_info, status):
+                if self.is_recording:
+                    audio_data = np.frombuffer(in_data, dtype=np.float32).copy()
+                    self.spk_frames.append(audio_data)
+                return (in_data, pyaudio.paContinue)
+
+            self.mic_frames = []
+            self.spk_frames = []
+            
+            opened_any = False
+            
+            try:
+                if mic_id is not None:
+                    dev_info = self.pa.get_device_info_by_index(mic_id)
+                    self.mic_sample_rate = int(dev_info["defaultSampleRate"])
+                    self.mic_channels = dev_info.get("maxInputChannels", 1)
+                    
+                    self.mic_stream = self.pa.open(
+                        format=self.FORMAT,
+                        channels=self.mic_channels,
+                        rate=self.mic_sample_rate,
+                        input=True,
+                        input_device_index=mic_id,
+                        stream_callback=mic_callback
+                    )
+                    opened_any = True
+            except Exception as e:
+                logger.error(f"Failed to open microphone: {e}")
+
+            try:
+                if spk_id is not None:
+                    # WASAPI loopback might require exact channel count/rate of the device
+                    dev_info = self.pa.get_device_info_by_index(spk_id)
+                    rate = int(dev_info["defaultSampleRate"])
+                    channels = dev_info["maxInputChannels"]
+                    self.spk_sample_rate = rate
+                    self.spk_channels = channels
+                    
+                    self.spk_stream = self.pa.open(
+                        format=self.FORMAT,
+                        channels=channels,
+                        rate=rate,
+                        input=True,
+                        input_device_index=spk_id,
+                        stream_callback=spk_callback
+                    )
+                    opened_any = True
+            except Exception as e:
+                logger.error(f"Failed to open loopback (system audio): {e}")
+
+            if not opened_any:
+                raise RuntimeError("Could not open microphone nor speaker for recording.")
+
         except Exception as e:
-            logger.error(f"Failed to open loopback (system audio): {e}")
+            self.is_recording = False
+            if self.mic_stream:
+                try:
+                    self.mic_stream.close()
+                except Exception:
+                    pass
+                self.mic_stream = None
+            if self.spk_stream:
+                try:
+                    self.spk_stream.close()
+                except Exception:
+                    pass
+                self.spk_stream = None
+            if self.pa:
+                try:
+                    self.pa.terminate()
+                except Exception:
+                    pass
+                self.pa = None
+            raise e
 
     def stop_recording(self, output_file="meeting_record.wav"):
         self.is_recording = False
         
         if self.mic_stream:
-            self.mic_stream.stop_stream()
-            self.mic_stream.close()
+            try:
+                self.mic_stream.stop_stream()
+                self.mic_stream.close()
+            except Exception as e:
+                logger.error(f"Error closing mic stream: {e}")
+            self.mic_stream = None
             
         if self.spk_stream:
-            self.spk_stream.stop_stream()
-            self.spk_stream.close()
+            try:
+                self.spk_stream.stop_stream()
+                self.spk_stream.close()
+            except Exception as e:
+                logger.error(f"Error closing speaker stream: {e}")
+            self.spk_stream = None
             
         # Mix the frames
         # This is a basic mix: simply saving what we captured. 
@@ -216,6 +251,14 @@ class AudioRecorder:
         else:
             mixed = np.zeros(0, dtype=np.float32)
         
+        # Terminate PortAudio to release all audio locks
+        if self.pa:
+            try:
+                self.pa.terminate()
+            except Exception as e:
+                logger.error(f"Error terminating PyAudio: {e}")
+            self.pa = None
+
         if len(mixed) > 0:
             sf.write(output_file, mixed, target_sr)
             logger.info(f"Saved recording to {output_file}")
@@ -224,7 +267,12 @@ class AudioRecorder:
         return None
 
     def terminate(self):
-        self.pa.terminate()
+        if self.pa:
+            try:
+                self.pa.terminate()
+            except Exception:
+                pass
+            self.pa = None
 
 _recorder_instance = None
 def record_audio(output_file="audio.wav"):
