@@ -208,8 +208,15 @@ class MeetingAssistantDashboard:
         browse_btn = HoverButton(self.settings_frame, text="Browse...", bg=BTN_BG, fg=TEXT_COLOR, relief=tk.FLAT, bd=0, command=self.browse_folder, font=("Segoe UI", 8))
         browse_btn.grid(row=4, column=2, padx=15, pady=4, sticky="e")
 
-        save_btn = HoverButton(self.settings_frame, text="Save Settings", bg=ACCENT_COLOR, fg="#11111b", font=("Segoe UI", 9, "bold"), relief=tk.FLAT, bd=0, command=self.save_settings)
-        save_btn.grid(row=5, column=0, columnspan=3, pady=8)
+        # Settings actions buttons (Refresh and Save)
+        btn_frame = tk.Frame(self.settings_frame, bg=CARD_COLOR)
+        btn_frame.grid(row=5, column=0, columnspan=3, pady=8)
+
+        refresh_btn = HoverButton(btn_frame, text="Refresh Devices 🔄", bg=BTN_BG, fg=TEXT_COLOR, font=("Segoe UI", 9), relief=tk.FLAT, bd=0, command=self.refresh_devices, padx=10, pady=4)
+        refresh_btn.pack(side=tk.LEFT, padx=5)
+
+        save_btn = HoverButton(btn_frame, text="Save Settings", bg=ACCENT_COLOR, fg="#11111b", font=("Segoe UI", 9, "bold"), relief=tk.FLAT, bd=0, command=self.save_settings, padx=15, pady=4)
+        save_btn.pack(side=tk.LEFT, padx=5)
 
         # Bind settings changes to auto-save
         self.mic_combo.bind("<<ComboboxSelected>>", self.save_settings)
@@ -382,6 +389,44 @@ class MeetingAssistantDashboard:
             
         self.mic_devices = [(idx, name) for idx, name, is_loopback in devices if not is_loopback]
         self.spk_devices = [(idx, name) for idx, name, is_loopback in devices if is_loopback]
+
+    def refresh_devices(self):
+        logger.info("Refreshing audio devices list...")
+        
+        # Save current selections to try to preserve them
+        current_mic = self.mic_combo.get()
+        current_spk = self.spk_combo.get()
+        
+        self.load_device_lists()
+        
+        # Update values in comboboxes
+        mic_disp = [f"{idx}: {name}" for idx, name in self.mic_devices]
+        self.mic_combo['values'] = ["Default"] + mic_disp
+        
+        spk_disp = [f"{idx}: {name}" for idx, name in self.spk_devices]
+        self.spk_combo['values'] = ["Default"] + spk_disp
+        
+        # Restore mic selection if possible, otherwise keep saved config or Default
+        if current_mic in self.mic_combo['values']:
+            self.mic_combo.set(current_mic)
+        else:
+            config = load_config()
+            config_mic = config.get("mic_device_index")
+            match = next((x for x in mic_disp if x.startswith(str(config_mic) + ":")), None) if config_mic is not None else None
+            self.mic_combo.set(match if match else "Default")
+            
+        # Restore speaker selection if possible, otherwise keep saved config or Default
+        if current_spk in self.spk_combo['values']:
+            self.spk_combo.set(current_spk)
+        else:
+            config = load_config()
+            config_spk = config.get("speaker_device_index")
+            match = next((x for x in spk_disp if x.startswith(str(config_spk) + ":")), None) if config_spk is not None else None
+            self.spk_combo.set(match if match else "Default")
+            
+        logger.info("Audio devices list refreshed successfully.")
+        self.status_desc.config(text="Audio devices list refreshed.", fg=SUCCESS_COLOR)
+        self.root.after(3000, lambda: self.status_desc.config(fg=DIM_COLOR) if not self.is_recording else None)
 
     def browse_folder(self):
         folder = filedialog.askdirectory(initialdir=self.folder_var.get())
